@@ -1,54 +1,85 @@
 import SwiftUI
 
-@main
-struct AgentEmailApp: App {
+@main struct AgentEmailApp: App {
+    @StateObject private var mail = MailController()
     var body: some Scene {
-        WindowGroup("Agent Email") { SettingsView().frame(minWidth: 600, minHeight: 560) }
+        WindowGroup("Agent Email") {
+            SettingsView().environmentObject(mail).frame(minWidth: 900, minHeight: 700)
+        }
     }
 }
 
 struct SettingsView: View {
-    @AppStorage("provider") private var provider = "Outlook"
-    @AppStorage("address") private var address = ""
+    @EnvironmentObject private var mail: MailController
+    @AppStorage("outlookClientID") private var clientID = ""
     @AppStorage("prefix") private var prefix = "[AGENT]"
-    @State private var subject = "[AGENT] 帮我检查项目状态"
-    @State private var sender = ""
-    @State private var result = ""
-
+    @State private var setup = false
     var body: some View {
-        Form {
-            Section("邮箱") {
-                Picker("服务商", selection: $provider) {
-                    Text("Outlook").tag("Outlook")
-                    Text("QQ 邮箱").tag("QQ")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Agent Email").font(.largeTitle.bold())
+                Spacer()
+                if mail.busy { ProgressView().controlSize(.small) }
+                Text(mail.connected ? "Outlook 已连接" : "Outlook 未连接")
+                    .foregroundStyle(mail.connected ? .green : .secondary)
+            }
+            Text(mail.status).font(.callout).textSelection(.enabled)
+            if !mail.connected {
+                GroupBox("连接 Outlook") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("使用 Microsoft 网页登录，不需要将邮箱密码交给本软件。")
+                        TextField("Microsoft Application (client) ID", text: $clientID)
+                            .textFieldStyle(.roundedBorder).disabled(mail.busy)
+                        HStack {
+                            Button("连接 Outlook / 网页验证") { mail.connect(clientID: clientID) }
+                                .disabled(mail.busy || UUID(uuidString: clientID.trimmingCharacters(in: .whitespacesAndNewlines)) == nil)
+                            Button("恢复已保存的连接") { mail.connect(clientID: clientID, restore: true) }
+                                .disabled(mail.busy || clientID.isEmpty)
+                            Button("应用注册步骤") { setup.toggle() }
+                            if mail.busy { Button("取消") { mail.cancelLogin() } }
+                        }
+                        if !mail.userCode.isEmpty {
+                            Text("Microsoft 验证码：\(mail.userCode)").font(.title2.monospaced()).textSelection(.enabled)
+                            if let url = mail.verificationURL { Link("重新打开 Microsoft 验证页面", destination: url) }
+                        }
+                        if setup {
+                            Text("首次发布前由开发者完成一次：\n1. 在 Microsoft Entra → App registrations → New registration 创建 Agent Email。\n2. 账号类型选择组织目录和个人 Microsoft 账号。\n3. Authentication → Advanced settings → Allow public client flows：Yes。\n4. API permissions 添加 Microsoft Graph 的 Delegated permissions：User.Read、Mail.Read、Mail.Send、offline_access。\n5. 将 Overview 中的 Application (client) ID 填入上方；不创建 Client Secret。\n最终用户之后只需网页登录授权。")
+                                .font(.callout).textSelection(.enabled)
+                            Link("打开 Microsoft Entra 应用注册", destination: URL(string: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade")!)
+                        }
+                    }.padding(6)
                 }
-                TextField("自己的邮箱地址", text: $address)
-                Text(provider == "Outlook" ? "计划使用 Microsoft OAuth 登录，不收集邮箱密码。" : "计划使用 QQ 邮箱授权码，不使用网页登录密码。")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("尚未连接邮箱；当前只保存配置并验证触发规则。")
-                    .foregroundStyle(.orange)
-            }
-            Section("触发规则") {
-                TextField("主题前缀", text: $prefix)
-                Text("仅处理自己发给自己的邮件。常驻程序收信，有任务时才启动 Agent；AI 不循环等待邮件。")
-                Text("回复去掉触发前缀，并标记为自动回复。")
-            }
-            Section("本地规则预览（不会收发邮件或执行 Agent）") {
-                TextField("模拟发件人", text: $sender)
-                TextField("模拟邮件主题", text: $subject)
-                Button("检查是否触发") {
-                    let accepted = TriggerPolicy(ownAddress: address, prefix: prefix)
-                        .accepts(sender: sender, recipients: [address], subject: subject)
-                    result = accepted ? "符合触发规则；实际执行尚未接入。" : "忽略：地址、主题前缀或任务内容不符合规则。"
+            } else {
+                HStack {
+                    Button("刷新真实收件箱") { mail.refresh() }.disabled(mail.busy)
+                    Button("断开并删除本机授权") { mail.disconnect() }.disabled(mail.busy)
+                    Spacer()
+                    TextField("触发主题前缀", text: $prefix).frame(width: 160)
                 }
-                if !result.isEmpty { Text(result).textSelection(.enabled) }
+                HSplitView {
+                    List(mail.messages, selection: $mail.selected) { item in
+                        VStack(alignment: .leading) {
+                            Text(item.subject ?? "（无主题）").lineLimit(2)
+                            Text(item.from?.emailAddress.address ?? "").font(.caption).foregroundStyle(.secondary)
+                            if TriggerPolicy(ownAddress: mail.address, prefix: prefix).accepts(sender: item.from?.emailAddress.address ?? "", recipients: item.toRecipients?.compactMap { $0.emailAddress.address } ?? [], subject: item.subject ?? "") {
+                                Text("符合 Agent 触发规则").font(.caption).foregroundStyle(.blue)
+                            }
+                        }.tag(item.id)
+                    }.frame(minWidth: 260)
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let item = mail.current {
+                            Text(item.subject ?? "（无主题）").font(.headline)
+                            ScrollView { Text(item.body?.content ?? item.bodyPreview ?? "").frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
+                            Text("回复内容")
+                            TextEditor(text: $mail.replyText).frame(minHeight: 100, maxHeight: 160).border(.quaternary)
+                            Button("发送回复到原邮件线程") { mail.sendReply(prefix: prefix) }.disabled(mail.busy || mail.replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        } else { ContentUnavailableView("选择一封真实邮件", systemImage: "envelope") }
+                    }.padding(10).frame(minWidth: 400)
+                }
             }
-            Section("实现进度") {
-                Text("已完成：独立 Mac 工程、邮箱配置界面、主题触发规则。")
-                Text("待完成：真实邮箱授权与监听、Agent 调用、同线程邮件回复、去重和失败重试。")
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
+            Spacer(minLength: 0)
+            Text("当前可实际授权、读取最近 30 封收件箱邮件及手动回复。自动监听和 Agent 执行尚未接入；QQ 邮箱接入待实现。")
+                .font(.caption).foregroundStyle(.secondary)
+        }.padding(20)
     }
 }
