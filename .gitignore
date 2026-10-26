@@ -5,3 +5,6 @@ dist/
 .env
 *.p12
 *.p8
+
+__pycache__/
+*.pyc

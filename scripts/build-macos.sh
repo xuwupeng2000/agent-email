@@ -6,6 +6,7 @@ BIN_DIR="$(swift build -c release --show-bin-path)"
 APP="dist/Agent Email.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/AgentEmail" "$APP/Contents/MacOS/AgentEmail"
+cp Sources/AgentEmail/Resources/qq_bridge.py "$APP/Contents/Resources/qq_bridge.py"
 cp README.md "$APP/Contents/Resources/README.md"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

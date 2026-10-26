@@ -2,9 +2,10 @@ import SwiftUI
 
 @main struct AgentEmailApp: App {
     @StateObject private var mail = MailController()
+    @StateObject private var qq = QQController()
     var body: some Scene {
         WindowGroup("Agent Email") {
-            SettingsView().environmentObject(mail).frame(minWidth: 900, minHeight: 700)
+            MailboxRootView().environmentObject(mail).environmentObject(qq).frame(minWidth: 900, minHeight: 700)
         }
     }
 }
